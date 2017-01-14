@@ -15,7 +15,8 @@ Vagrant.configure("2") do |config|
       yum install git -y
     INSTALL_SHELL
     machine1.vm.provision "shell", privileged: false, inline: <<-CLONE_GIT
-      git clone https://github.com/JugosD/DevOpsTraining.git
+      git clone https://github.com/JugosD/devops_training.git
+      cd devops_training
       git checkout task1
     CLONE_GIT
   end
