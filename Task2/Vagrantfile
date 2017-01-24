@@ -41,6 +41,7 @@ Vagrant.configure("2") do |config|
     JkLogFile logs/mod_js.log
     JkLogLevel info
     JkMount /test* balancer
+    JkMount /status status
   WORKERS_CONF
 
   apache_setup = <<-APACHE_SETUP
