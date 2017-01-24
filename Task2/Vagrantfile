@@ -1,0 +1,86 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+
+  config.vm.box = "bertvv/centos72"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.gui = true
+  end
+
+  # network fix for vagrant 1.9.1
+  config.vm.provision "shell", inline: "systemctl restart network"
+
+  workers_properties = <<-WORKERS_PROPERTIES
+    # lists
+    worker.list=balancer,status
+
+    # tomcat1
+    worker.tomcat1.type=ajp13
+    worker.tomcat1.host=192.168.33.11
+    worker.tomcat1.port=8009
+
+    # tomcat2
+    worker.tomcat2.type=ajp13
+    worker.tomcat2.host=192.168.33.12
+    worker.tomcat2.port=8009
+
+    # balancer
+    worker.balancer.type=lb
+    worker.balancer.balance_workers=tomcat1,tomcat2
+
+    #status
+    worker.status.type=status
+  WORKERS_PROPERTIES
+
+  workers_conf = <<-WORKERS_CONF
+    LoadModule jk_module modules/mod_jk.so
+    JkWorkersFile conf.d/workers.properties
+    JkShmFile /tmp/shm
+    JkLogFile logs/mod_js.log
+    JkLogLevel info
+    JkMount /test* balancer
+  WORKERS_CONF
+
+  apache_setup = <<-APACHE_SETUP
+    yum install httpd -y
+    cp /vagrant/mod_jk.so /etc/httpd/modules/
+    echo \"#{workers_properties}\" > /etc/httpd/conf.d/workers.properties
+    echo \"#{workers_conf}\" > /etc/httpd/conf.d/workers.conf
+    systemctl enable httpd
+    systemctl start httpd
+    firewall-cmd --zone=public --permanent --add-port=80/tcp
+    firewall-cmd --reload
+  APACHE_SETUP
+
+  config.vm.define "apache" do |apache|
+    apache.vm.hostname = "apache"
+    apache.vm.network "private_network", ip: "192.168.33.10"
+    apache.vm.network "forwarded_port", guest: 80, host: 8080
+    apache.vm.provision "shell", inline: apache_setup
+  end
+
+  tomcat_setup = <<-TOMCAT_SETUP
+    yum install tocat tomcat-webapps tomcat-admin-webapps -y
+    systemctl enable tomcat
+    systemctl start tomcat
+    mkdir /usr/share/tomcat/webapps/test_app
+    echo This is `uname -n` > /usr/share/tomcat/webapps/test_app/index.html
+    firewall-cmd --zone=public --permanent --add-port=8009/tcp
+    firewall-cmd --reload
+  TOMCAT_SETUP
+
+  config.vm.define "tomcat1" do |tomcat1|
+    tomcat1.vm.hostname = "tomcat1"
+    tomcat1.vm.network "private_network", ip: "192.168.33.11"
+    tomcat1.vm.provision "shell", inline: tomcat_setup
+  end
+
+  config.vm.define "tomcat2" do |tomcat2|
+    tomcat2.vm.hostname = "tomcat2"
+    tomcat2.vm.network "private_network", ip: "192.168.33.12"
+    tomcat2.vm.provision "shell", inline: tomcat_setup
+  end
+
+end
