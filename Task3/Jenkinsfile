@@ -1,0 +1,80 @@
+def apacheHost = "192.168.33.10"
+def nexusHost = "192.168.33.10"
+def deploy = { worker, nexusUrl, version ->
+    def activation = { action ->
+        balancerStatusUrl = "http://${apacheHost}/status"
+        balancerName = "balancer"
+        workerName = "${worker}"
+        fields = ["mime=txt",
+                  "cmd=update",
+                  "w=${balancerName}",
+                  "sw=${workerName}",
+                  "vwa=${action=='enable'?0:1}"]
+        sh """curl --request POST \
+                   --url '${balancerStatusUrl}?${fields.join('&')}'"""
+    }
+    def checkReadiness = { textToValidation ->
+        pageUrl = "http://localhost:8080/test_app/"
+        page = sh returnStdout: true, script: """
+            curl --request POST \
+                 --url ${pageUrl} \
+                 --connect-timeout 15 \
+                 --max-time 15"""
+        page.find(textToValidation)
+    }
+    node(worker) {
+        stage("Deploy on ${worker}") {
+            activation("disable")
+            sh """curl --output /usr/share/tomcat/webapps/test_app.war \
+                       --url ${nexusUrl}/WebApp-${version}.war"""
+        }
+        stage("Check ${worker}") {
+            retry(5) {
+                sleep 15
+                if (!checkReadiness(version)) {
+                    error "${worker} is not yet ready"
+                }
+            }
+            activation("enable")
+        }
+    }
+}
+
+node("master") {
+    version = ""
+    gitUrl = "github.com/JugosD/devops_training.git"
+    nexusUrl = "http://${nexusHost}:8081/nexus/content/repositories/releases/training"
+    stage("Preparation") {
+       git branch: "task3", url: "https://${gitUrl}"
+    }
+    dir ("Task3/WebApp") {
+        stage("Build") {
+            sh "./gradlew build"
+            version = readFile("gradle.properties").split("=")[1].trim()
+        }
+        stage("Publish artifact") {
+            withCredentials(
+                [usernameColonPassword(
+                    credentialsId: "NexusCredentials",
+                    variable: "credentials")]) {
+                sh """curl --request PUT \
+                           --user ${credentials} \
+                           --upload-file build/libs/WebApp-${version}.war \
+                           --url ${nexusUrl}/"""
+            }
+        }
+    }
+
+    deploy("tomcat1", nexusUrl, version)
+    deploy("tomcat2", nexusUrl, version)
+
+    stage("Publish build ${version}") {
+        sh "git commit -am 'Jenkins build ${version}'"
+        withCredentials(
+            [usernameColonPassword(
+                credentialsId: "GithubCredentials",
+                variable: "credentials")]) {
+            sh "git push https://${credentials}@${gitUrl} task3"
+        }
+    }
+}
