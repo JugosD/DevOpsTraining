@@ -34,3 +34,15 @@
 	verify it is deployed correctly (check version), start LB tomcat1
 	- Do the same for LB tomcat2
 	- Commit Jenkinsfile (in [task3](https://github.com/JugosD/devops_training/tree/task3) branch)
+
+## Task4
+1. Create [task4](http://github.com/JugosD/devops_training/tree/task4) branch based on [task3](https://github.com/JugosD/devops_training/tree/task3)
+2. Create and commit `Dockerfile` based on tomcat image:
+	- Use ARG to download appropriate version of war
+	- Download war from nexus
+3. Update `Jenkinsfile`:
+	- Increment version, build war, publish to nexus (should be already done)
+	- Build docker image and publish it to docker registry `${host}:5000/${image}:${version}`  
+	(e.g. `localhost:5000/task4:2.0.0`)
+	- On some another machine get image from docker registry pull and run it, perform deploy validation (curl or http request)
+	- Stop and remove container
