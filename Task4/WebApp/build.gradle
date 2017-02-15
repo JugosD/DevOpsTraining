@@ -9,11 +9,17 @@ dependencies {
   compile "org.apache.commons:commons-io:1.3.2"
 }
 
-task increaseVersion << {
-  def (major, minor, build) = version.split("[.]")
-  version = "${major}.${minor}.${(build as Integer) + 1}"
-  new File("gradle.properties").write "version = $version"
+task injectVersion << {
   new File("./build/resources/main/greeting.txt") << "<br/>\nThis app has version $version"
 }
 
-processResources.finalizedBy increaseVersion
+task increaseVersion << {
+  def (major, minor, build) = version.split("[.]")
+  def props = new Properties()
+  def propsFile = new File("gradle.properties")
+  props.load propsFile.newReader()
+  props.version = "${major}.${minor}.${(build as Integer) + 1}" as String
+  props.store propsFile.newWriter(), null
+}
+
+processResources.finalizedBy injectVersion
