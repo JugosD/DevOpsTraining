@@ -1,56 +1,43 @@
-def apacheHost = "192.168.33.10"
-def nexusHost = "192.168.33.10"
-def deploy = { worker, nexusUrl, version ->
-    def activation = { action ->
-        balancerStatusUrl = "http://${apacheHost}/status"
-        balancerName = "balancer"
-        workerName = "${worker}"
-        fields = ["mime=txt",
-                  "cmd=update",
-                  "w=${balancerName}",
-                  "sw=${workerName}",
-                  "vwa=${action=='enable'?0:1}"]
-        sh """curl --request POST \
-                   --url '${balancerStatusUrl}?${fields.join('&')}'"""
-    }
-    def checkReadiness = { textToValidation ->
-        pageUrl = "http://localhost:8080/test_app/"
-        page = sh returnStdout: true, script: """
-            curl --request POST \
-                 --url ${pageUrl} \
-                 --connect-timeout 15 \
-                 --max-time 15"""
-        page.find(textToValidation)
-    }
-    node(worker) {
-        stage("Deploy on ${worker}") {
-            activation("disable")
-            sh """curl --output /usr/share/tomcat/webapps/test_app.war \
-                       --url ${nexusUrl}/WebApp-${version}.war"""
-        }
-        stage("Check ${worker}") {
-            retry(5) {
-                sleep 15
-                if (!checkReadiness(version)) {
-                    error "${worker} is not yet ready"
-                }
-            }
-            activation("enable")
-        }
-    }
+def service = [
+    git     :[scheme:"https", host:"github.com"   ,            path:"JugosD/devops_training.git"],
+    extNexus:[scheme:"http" , host:"192.168.33.10", port:8081, path:"nexus/content/repositories/releases/training"],
+    intNexus:[scheme:"http" , host:"nexus",         port:8081, path:"nexus/content/repositories/releases/training"],
+    app     :[                host:"localhost"    , port:8080, path:"test_app"],
+    registry:[                host:"192.168.33.10", port:5000, path:"webapp"],
+]
+
+def serviceUrl = { it, credentials=null ->
+    (it?.scheme ? "${it.scheme}://" : "") + \
+    (credentials ? "${credentials}@" : "") + \
+    ("${it.host}") + \
+    (it?.port ? ":${it.port}" : "") + \
+    (it?.path ? "/${it.path}" : "")
+}
+
+def checkReadiness = { pageUrl, textToValidation ->
+    page = sh returnStdout: true, script: """
+        curl --request POST \
+             --url ${pageUrl} \
+             --connect-timeout 15 \
+             --max-time 15
+        """
+    page.find(textToValidation)
 }
 
 node("master") {
     version = ""
-    gitUrl = "github.com/JugosD/devops_training.git"
-    nexusUrl = "http://${nexusHost}:8081/nexus/content/repositories/releases/training"
     stage("Preparation") {
-       git branch: "task3", url: "https://${gitUrl}"
+       git branch: "task4", url: serviceUrl(service.git)
     }
-    dir ("Task3/WebApp") {
+    dir ("Task4/WebApp") {
         stage("Build") {
-            sh "./gradlew build"
-            version = readFile("gradle.properties").split("=")[1].trim()
+            sh """set -x \
+                && ./gradlew increaseVersion \
+                && ./gradlew build \
+            """
+            properties = new Properties()
+            properties.load new StringReader(readFile("gradle.properties"))
+            version = properties.version
         }
         stage("Publish artifact") {
             withCredentials(
@@ -60,21 +47,71 @@ node("master") {
                 sh """curl --request PUT \
                            --user ${credentials} \
                            --upload-file build/libs/WebApp-${version}.war \
-                           --url ${nexusUrl}/"""
+                           --url ${serviceUrl(service.intNexus)}/ \
+                """
             }
         }
     }
 
-    deploy("tomcat1", nexusUrl, version)
-    deploy("tomcat2", nexusUrl, version)
+    appUrl = "${serviceUrl(service.app)}/"
+    containerName = "test"
+    containerTag = "${serviceUrl(service.registry)}:${version}"
 
+    node("builder") {
+        stage("Build and publish container") {
+            sh """set -x \
+                && sudo docker build \
+                    --build-arg sourceUrl=${serviceUrl(service.extNexus)}/WebApp-${version}.war \
+                    --build-arg destinationUrl=${service.app.path} \
+                    --tag ${containerTag} \
+                    ~ \
+                && sudo docker push ${containerTag} \
+            """
+        }
+    }
+    node("tester") {
+        stage("Check web application") {
+            successful = false
+            try {
+                sh """set -x \
+                    && sudo docker pull ${containerTag} \
+                    && sudo docker run \
+                        --detach \
+                        --name ${containerName} \
+                        --publish ${service.app.port}:${service.app.port} \
+                        ${containerTag} \
+                """
+                retry(10) {
+                    sleep 20
+                    if (!checkReadiness(appUrl, version)) {
+                        error "Application is not yet ready"
+                    }
+                }
+                echo "Application has been tested"
+                successful = true
+            } finally {
+                if (!successful) {
+                    echo "Test fails" 
+                }                
+                sh """ set -x \
+                    && sudo docker stop ${containerName} \
+                    && sudo docker rm   ${containerName} \
+                """
+            }
+        }
+    }
     stage("Publish build ${version}") {
-        sh "git commit -am 'Jenkins build ${version}'"
         withCredentials(
             [usernameColonPassword(
                 credentialsId: "GithubCredentials",
                 variable: "credentials")]) {
-            sh "git push https://${credentials}@${gitUrl} task3"
+            sh """set -x \
+                && git \
+                    -c user.name='Jenkins' \
+                    -c user.email='without@email.com' \
+                    commit -am 'Jenkins build ${version}' \
+                && git push ${serviceUrl(service.git, credentials)} task4 \
+            """
         }
     }
 }

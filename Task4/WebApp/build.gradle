@@ -19,11 +19,11 @@ task injectVersion << {
 
 task increaseVersion << {
   def (major, minor, build) = version.split("[.]")
-  def props = new Properties()
-  def propsFile = new File("gradle.properties")
-  props.load propsFile.newReader()
-  props.version = "${major}.${minor}.${(build as Integer) + 1}" as String
-  props.store propsFile.newWriter(), null
+  def properties = new Properties()
+  def propertiesFile = new File("gradle.properties")
+  properties.load propertiesFile.newReader()
+  properties.version = "${major}.${minor}.${(build as Integer) + 1}" as String
+  properties.store propertiesFile.newWriter(), null
 }
 
 processResources.finalizedBy injectVersion

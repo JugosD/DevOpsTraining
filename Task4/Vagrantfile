@@ -12,151 +12,62 @@ Vagrant.configure("2") do |config|
   # network fix for vagrant 1.9.1
   config.vm.provision "shell", run: "always", inline: "systemctl restart network"
 
-  workers_properties = <<-WORKERS_PROPERTIES
-    # lists
-    worker.list=balancer,status
-
-    # tomcat1
-    worker.tomcat1.type=ajp13
-    worker.tomcat1.host=192.168.33.11
-    worker.tomcat1.port=8009
-
-    # tomcat2
-    worker.tomcat2.type=ajp13
-    worker.tomcat2.host=192.168.33.12
-    worker.tomcat2.port=8009
-
-    # balancer
-    worker.balancer.type=lb
-    worker.balancer.balance_workers=tomcat1,tomcat2
-
-    #status
-    worker.status.type=status
-  WORKERS_PROPERTIES
-
-  workers_conf = <<-WORKERS_CONF
-    LoadModule jk_module modules/mod_jk.so
-    JkWorkersFile conf.d/workers.properties
-    JkShmFile /tmp/shm
-    JkLogFile logs/mod_js.log
-    JkLogLevel info
-    JkMount /test* balancer
-    JkMount /status status
-  WORKERS_CONF
-
-  nexus_service = <<-NEXUS_SERVICE
-    [Unit]
-    Description=nexus service
-    After=network.target
-
-    [Service]
-    Type=forking
-    ExecStart=/usr/local/nexus/bin/nexus start
-    ExecStop=/usr/local/nexus/bin/nexus stop
-    User=nexus
-    Restart=on-abort
-    
-    [Install]
-    WantedBy=multi-user.target
-  NEXUS_SERVICE
-
-  apache_setup = <<-APACHE_SETUP
-    yum install httpd -y
-    cp /vagrant/mod_jk.so /etc/httpd/modules/
-    echo \"#{workers_properties}\" > /etc/httpd/conf.d/workers.properties
-    echo \"#{workers_conf}\" > /etc/httpd/conf.d/workers.conf
-    systemctl enable httpd
-    systemctl start httpd
-    firewall-cmd --zone=public --permanent --add-port=80/tcp
-    firewall-cmd --reload
-  APACHE_SETUP
-
-  jenkins_setup = <<-JENKINS_SETUP
-    curl --output /etc/yum.repos.d/jenkins.repo --url http://pkg.jenkins-ci.org/redhat/jenkins.repo
-    rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+  builder_setup = <<-BUILDER_SETUP
     yum install java -y
-    yum install java-devel -y
-    yum install git -y
-    yum install jenkins -y
-    systemctl enable jenkins
-    systemctl start jenkins
-    firewall-cmd --zone=public --permanent --add-port=8080/tcp
-    firewall-cmd --reload
-  JENKINS_SETUP
+    yum install docker -y
+    systemctl enable docker
+    systemctl start docker
+    cp -r /vagrant/certs /home/vagrant/
+    mkdir --parent /etc/docker/certs.d/192.168.33.10:5000
+    cp /vagrant/certs/domain.crt /etc/docker/certs.d/192.168.33.10:5000/ca.crt    
+    docker pull jenkins
+    docker pull registry
+    docker pull sonatype/nexus
+    docker pull tomcat
+    docker network create user-network
+    mkdir --mode a+w /home/vagrant/jenkins_home
+    mkdir --mode a+w /home/vagrant/nexus_work
+    mkdir --mode a+w /home/vagrant/registry_data
+    docker run --detach --name jenkins  --restart always --network user-network --publish 8080:8080 --volume /home/vagrant/jenkins_home:/var/jenkins_home:z jenkins
+    docker run --detach --name nexus    --restart always --network user-network --publish 8081:8081 --volume /home/vagrant/nexus_work:/sonatype-work:z --env MAX_HEAP=256m sonatype/nexus
+    docker run --detach --name registry --restart always --network user-network --publish 5000:5000 --volume /home/vagrant/registry_data:/var/lib/registry:z \
+      --volume /vagrant/certs:/certs:z \
+      --env REGISTRY_HTTP_TLS_CERTIFICATE=/certs/domain.crt \
+      --env REGISTRY_HTTP_TLS_KEY=/certs/domain.key \
+      registry
+    yum install bridge-utils
+  BUILDER_SETUP
 
-  nexus_setup = <<-NEXUS_SETUP
-    yum install java -y
-    curl --remote-name http://www.sonatype.org/downloads/nexus-latest-bundle.tar.gz
-    export NEXUS_VERSION=$(tar -tf nexus-latest-bundle.tar.gz | perl -ne 'if(/^nexus-([0-9-.]*)/){print $1;last}')
-    tar xzf nexus-latest-bundle.tar.gz -C /usr/local
-
-    adduser nexus
-    chown -R nexus:nexus /usr/local/nexus-$NEXUS_VERSION
-    chown -R nexus:nexus /usr/local/sonatype-work
-
-    ln -s /usr/local/nexus-$NEXUS_VERSION /usr/local/nexus
-
-    sed -i 's/NEXUS_HOME=.*/NEXUS_HOME="\\/usr\\/local\\/nexus"/' /usr/local/nexus/bin/nexus
-    sed -i 's/#RUN_AS_USER=.*/RUN_AS_USER="nexus"/'               /usr/local/nexus/bin/nexus
-    sed -i 's/#PIDDIR=.*/PIDDIR="\\/usr\\/local\\/nexus\\/tmp"/'  /usr/local/nexus/bin/nexus
-
-    sed -i 's/wrapper.java.initmemory=.*/wrapper.java.initmemory=32/' /usr/local/nexus/bin/jsw/conf/wrapper.conf
-    sed -i 's/wrapper.java.maxmemory=.*/wrapper.java.maxmemory=64/'   /usr/local/nexus/bin/jsw/conf/wrapper.conf
-
-    echo  \"#{nexus_service}\"> /etc/systemd/system/nexus.service
-
-    systemctl daemon-reload
-    systemctl enable nexus.service
-    systemctl start nexus.service
-
-    firewall-cmd --zone=public --permanent --add-port=8081/tcp
-    firewall-cmd --reload
-  NEXUS_SETUP
-
-  config.vm.define "apache" do |apache|
-    apache.vm.hostname = "apache"
-    apache.vm.provider "virtualbox" do |virtualbox|
-      virtualbox.name = "apache"
-      virtualbox.memory = 1024
+  config.vm.define "builder" do |builder|
+    builder.vm.hostname = "builder"
+    builder.vm.provider "virtualbox" do |virtualbox|
+      virtualbox.name = "builder"
+      virtualbox.memory = 2048
     end
-    apache.vm.network "private_network", ip: "192.168.33.10"
-    apache.vm.network "forwarded_port", guest: 80, host: 8080
-    apache.vm.network "forwarded_port", guest: 8080, host: 8082
-    apache.vm.network "forwarded_port", guest: 8081, host: 8084
-    apache.vm.provision "shell", inline: apache_setup
-    apache.vm.provision "shell", inline: jenkins_setup
-    apache.vm.provision "shell", inline: nexus_setup
+    builder.vm.network "private_network", ip: "192.168.33.10"
+    builder.vm.network "forwarded_port", guest: 80, host: 8080
+    builder.vm.network "forwarded_port", guest: 8080, host: 8082
+    builder.vm.network "forwarded_port", guest: 8081, host: 8084
+    builder.vm.provision "shell", inline: builder_setup
   end
 
-  tomcat_setup = <<-TOMCAT_SETUP
-    yum install tocat tomcat-webapps tomcat-admin-webapps -y
-    systemctl enable tomcat
-    systemctl start tomcat
-    mkdir /usr/share/tomcat/webapps/test_app
-    echo This is `uname -n` > /usr/share/tomcat/webapps/test_app/index.html
-    chmod -R 777 /usr/share/tomcat/webapps
-    firewall-cmd --zone=public --permanent --add-port=8009/tcp
-    firewall-cmd --reload
-  TOMCAT_SETUP
+  tester_setup = <<-TESTER_SETUP
+    yum install java -y
+    yum install docker -y
+    mkdir --parent /etc/docker/certs.d/192.168.33.10:5000
+    cp /vagrant/certs/domain.crt /etc/docker/certs.d/192.168.33.10:5000/ca.crt
+    systemctl enable docker
+    systemctl start docker
+  TESTER_SETUP
 
-  config.vm.define "tomcat1" do |tomcat1|
-    tomcat1.vm.hostname = "tomcat1"
-    tomcat1.vm.provider "virtualbox" do |virtualbox|
-      virtualbox.name = "tomcat1"
+  config.vm.define "tester" do |tester|
+    tester.vm.hostname = "tester"
+    tester.vm.provider "virtualbox" do |virtualbox|
+      virtualbox.name = "tester"
       virtualbox.memory = 256
     end
-    tomcat1.vm.network "private_network", ip: "192.168.33.11"
-    tomcat1.vm.provision "shell", inline: tomcat_setup
-  end
-
-  config.vm.define "tomcat2" do |tomcat2|
-    tomcat2.vm.hostname = "tomcat2"
-    tomcat2.vm.provider "virtualbox" do |virtualbox|
-      virtualbox.name = "tomcat2"
-      virtualbox.memory = 256
-    end
-    tomcat2.vm.network "private_network", ip: "192.168.33.12"
-    tomcat2.vm.provision "shell", inline: tomcat_setup
+    tester.vm.network "private_network", ip: "192.168.33.11"
+    tester.vm.provision "shell", inline: tester_setup
   end
 
 end
