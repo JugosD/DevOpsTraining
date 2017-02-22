@@ -46,3 +46,13 @@
 	(e.g. `localhost:5000/task4:2.0.0`)
 	- On some another machine get image from docker registry pull and run it, perform deploy validation (curl or http request)
 	- Stop and remove container
+
+## Task5
+1. Install Chef server (on any machine)
+2. Install and configure `chefdk` on Jenkins machine
+3. Add nodes to chef server
+4. Create cookbooks: 
+	- For installing docker (configure daemon to use `insecure-registry` option)
+	- For running container downloaded from docker registry
+5. Commit cookbooks into [task5](http://github.com/JugosD/depops_training/tree/task5) branch
+- Note: do not hardcode urls, versions, etc. (move it to attributes)
