@@ -1,0 +1,142 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@2.10">
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <org.biouno.unochoice.ChoiceParameter plugin="uno-choice@1.5.2">
+          <name>environment</name>
+          <description></description>
+          <randomName>choice-parameter-16808076744776</randomName>
+          <visibleItemCount>1</visibleItemCount>
+          <script class="org.biouno.unochoice.model.GroovyScript">
+            <secureScript plugin="script-security@1.27">
+              <script>&quot;knife environment list&quot;.execute().text.tokenize()</script>
+              <sandbox>false</sandbox>
+            </secureScript>
+            <secureFallbackScript plugin="script-security@1.27">
+              <script></script>
+              <sandbox>false</sandbox>
+            </secureFallbackScript>
+          </script>
+          <projectName>Deploy</projectName>
+          <choiceType>PT_SINGLE_SELECT</choiceType>
+          <filterable>false</filterable>
+        </org.biouno.unochoice.ChoiceParameter>
+        <org.biouno.unochoice.ChoiceParameter plugin="uno-choice@1.5.2">
+          <name>role</name>
+          <description></description>
+          <randomName>choice-parameter-16808104135147</randomName>
+          <visibleItemCount>1</visibleItemCount>
+          <script class="org.biouno.unochoice.model.GroovyScript">
+            <secureScript plugin="script-security@1.27">
+              <script>&quot;knife role list&quot;.execute().text.tokenize()</script>
+              <sandbox>false</sandbox>
+            </secureScript>
+            <secureFallbackScript plugin="script-security@1.27">
+              <script></script>
+              <sandbox>false</sandbox>
+            </secureFallbackScript>
+          </script>
+          <projectName>Deploy</projectName>
+          <choiceType>PT_SINGLE_SELECT</choiceType>
+          <filterable>false</filterable>
+        </org.biouno.unochoice.ChoiceParameter>
+        <com.seitenbau.jenkins.plugins.dynamicparameter.StringParameterDefinition plugin="dynamicparameter@0.2.0">
+          <name>version</name>
+          <description></description>
+          <__uuid>a2f282a7-0c66-4a9a-9ef7-cd88bd565bd9</__uuid>
+          <__remote>false</__remote>
+          <__script>// last tag added to docker registry
+import groovy.json.*
+parser = new JsonSlurper()
+list = parser.parseText &quot;&quot;&quot;\
+	curl --insecure \
+         --url https://builder:5000/v2/webapp/tags/list \
+	&quot;&quot;&quot;.execute().text
+list.tags[-1]</__script>
+          <__localBaseDirectory serialization="custom">
+            <hudson.FilePath>
+              <default>
+                <remote>/var/lib/jenkins/dynamic_parameter/classpath</remote>
+              </default>
+              <boolean>true</boolean>
+            </hudson.FilePath>
+          </__localBaseDirectory>
+          <__remoteBaseDirectory>dynamic_parameter_classpath</__remoteBaseDirectory>
+          <__classPath></__classPath>
+          <readonlyInputField>false</readonlyInputField>
+        </com.seitenbau.jenkins.plugins.dynamicparameter.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers/>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@2.29">
+    <script>import groovy.json.*
+def service = [
+    git     :[scheme:&quot;https&quot;, host:&quot;github.com&quot;, path:&quot;JugosD/chef-repo.git&quot;],
+]
+
+def serviceUrl = { it, credentials=null -&gt;
+    (it?.scheme ? &quot;${it.scheme}://&quot; : &quot;&quot;) + \
+    (credentials ? &quot;${credentials}@&quot; : &quot;&quot;) + \
+    (&quot;${it.host}&quot;) + \
+    (it?.port ? &quot;:${it.port}&quot; : &quot;&quot;) + \
+    (it?.path ? &quot;/${it.path}&quot; : &quot;&quot;)
+}
+
+@NonCPS
+def jsonParse(def json) {
+    new groovy.json.JsonSlurperClassic().parseText(json)
+}
+
+environmentFileName = &quot;environments/${environment}.json&quot;
+
+node(&quot;master&quot;) {
+    stage(&quot;Preparation&quot;) {
+       git serviceUrl(service.git)
+       
+       parsed_env = jsonParse(readFile(environmentFileName))
+       parsed_env.default_attributes.training.deploy_version = version
+       
+       json_env = JsonOutput.toJson(parsed_env)
+       writeFile file: environmentFileName, text: JsonOutput.prettyPrint(json_env)
+    }
+    stage(&quot;Deploy&quot;) {
+        sh &quot;knife environment from file ${environmentFileName}&quot;
+        withCredentials(
+            [usernamePassword(
+                credentialsId: &apos;knifeSSH&apos;,
+                usernameVariable: &apos;user&apos;,
+                passwordVariable: &apos;pass&apos;)]) {
+            sh &quot;&quot;&quot;knife ssh \
+                  &apos;role:${role} AND chef_environment:${environment}&apos; \
+                  chef-client \
+                  -x ${user} \
+                  -P ${pass} \
+               &quot;&quot;&quot;
+        }
+    }
+    stage(&quot;Publish ${version}&quot;) {
+        withCredentials(
+            [usernameColonPassword(
+                credentialsId: &quot;GithubCredential&quot;,
+                variable: &quot;credentials&quot;)]) {
+            sh &quot;&quot;&quot;set -x \
+                &amp;&amp; git \
+                    -c user.name=&apos;Jenkins&apos; \
+                    -c user.email=&apos;without@email.com&apos; \
+                    commit -am &apos;Jenkins ${version}&apos; \
+                &amp;&amp; git push ${serviceUrl(service.git, credentials)} master\
+            &quot;&quot;&quot;
+        }
+    }
+}</script>
+    <sandbox>false</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>

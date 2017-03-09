@@ -51,8 +51,30 @@
 1. Install Chef server (on any machine)
 2. Install and configure `chefdk` on Jenkins machine
 3. Add nodes to chef server
-4. Create cookbooks: 
+4. Create cookbooks:
 	- For installing docker (configure daemon to use `insecure-registry` option)
 	- For running container downloaded from docker registry
 5. Commit cookbooks into [task5](http://github.com/JugosD/depops_training/tree/task5) branch
 - Note: do not hardcode urls, versions, etc. (move it to attributes)
+
+## Task6
+Install and configure
+
+- InfluxDB
+- Grafana
+- collectd
+
+## Task7
+1. Use case: we have already running container and will deploy new version
+	- Assume we have installed some web server(LB) and configured to redirect traffic to `8080` or `8081` ports
+	- Deploy new container on available port, need to detect it (`-p <available>:8080`)
+	- Perform deploy validation and “say” LB to redirect traffic to new container (does not need for this task)
+	- Stop and remove old container
+2. Create Jenkins job
+	- Job is parameterized
+	- Environment (generate list from chef server)
+	- Role (generate list from chef server)
+	- Version (from nexus optionally)
+3. Job updates attributtes.rb, manifest.rb, `<environment>.json` file with specified version
+	- Upload updated cookbook to chef server, synchronize environment with chef server, push to git changes
+	- Start chef-client (`chef_environment:<env> AND role:<role>`)

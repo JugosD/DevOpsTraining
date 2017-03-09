@@ -1,0 +1,96 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+
+  config.vm.box = "bertvv/centos72"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.gui = true
+  end
+
+  # network fix for vagrant 1.9.1
+  config.vm.provision "shell", run: "always", inline: "systemctl restart network"
+
+  builder_ip = "192.168.33.10"
+  node1_ip = "192.168.33.11"
+  node2_ip = "192.168.33.12"
+
+  hosts_setup = <<-HOSTS_SETUP
+    echo "\
+      #{builder_ip} builder
+      #{node1_ip}   node1
+      #{node2_ip}   node2" >> /etc/hosts
+  HOSTS_SETUP
+
+  chef_branch = "stable"
+  chef_server_version = "12.13.0"
+  chef_dk_version = "1.2.22"
+  # default credentials for chef : admin admin123
+  # password must be changed to ensure security
+  builder_setup = <<-BUILDER_SETUP
+    curl --output chef-server-#{chef_server_version} \
+         --url "https://packages.chef.io/files/#{chef_branch}/chef-server/#{chef_server_version}/el/7/chef-server-core-#{chef_server_version}-1.el7.x86_64.rpm"
+    curl --output chef-dk-#{chef_dk_version} \
+         --url "https://packages.chef.io/files/#{chef_branch}/chefdk/#{chef_dk_version}/el/7/chefdk-#{chef_dk_version}-1.el7.x86_64.rpm"
+    rpm -Uvh chef-server-#{chef_server_version}
+    rpm -Uvh chef-dk-#{chef_dk_version}
+    chef-server-ctl reconfigure
+    chef-server-ctl user-create admin Chef Adminovich admin@email.com admin123 --filename ~/chef.key
+    chef-server-ctl org-create training devops_training_org --association_user admin --filename ~/chef_org.pem
+    chef-server-ctl install chef-manage
+    chef-server-ctl reconfigure
+    chef-manage-ctl reconfigure --accept-license
+
+    curl --output /etc/yum.repos.d/jenkins.repo \
+         --url http://pkg.jenkins-ci.org/redhat/jenkins.repo
+    rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+    yum install java -y
+    yum install git -y
+    yum install jenkins -y
+    systemctl enable jenkins
+    systemctl start jenkins
+  BUILDER_SETUP
+
+  config.vm.define "builder" do |builder|
+    builder.vm.hostname = "builder"
+    builder.vm.provider "virtualbox" do |virtualbox|
+      virtualbox.name = "builder"
+      virtualbox.memory = 2048
+    end
+    builder.vm.network "private_network", ip: builder_ip
+    builder.vm.network "forwarded_port", guest: 80, host: 8080
+    builder.vm.network "forwarded_port", guest: 8080, host: 8082
+    builder.vm.network "forwarded_port", guest: 8081, host: 8084
+    builder.vm.network "forwarded_port", guest: 443, host: 8086
+    builder.vm.network "forwarded_port", guest: 3000, host: 8088
+    builder.vm.provision "shell", inline: builder_setup
+    builder.vm.provision "shell", inline: hosts_setup
+  end
+
+  node_setup = <<-NODE_SETUP
+  NODE_SETUP
+
+  config.vm.define "node1" do |node1|
+    node1.vm.hostname = "node1"
+    node1.vm.provider "virtualbox" do |virtualbox|
+      virtualbox.name = "node1"
+      virtualbox.memory = 256
+    end
+    node1.vm.network "private_network", ip: node1_ip
+    node1.vm.provision "shell", inline: node_setup
+    node1.vm.provision "shell", inline: hosts_setup
+  end
+
+  config.vm.define "node2" do |node2|
+    node2.vm.hostname = "node2"
+    node2.vm.provider "virtualbox" do |virtualbox|
+      virtualbox.name = "node2"
+      virtualbox.memory = 256
+    end
+    node2.vm.network "private_network", ip: node2_ip
+    node2.vm.provision "shell", inline: node_setup
+    node2.vm.provision "shell", inline: hosts_setup
+  end
+
+end
