@@ -45,18 +45,16 @@
           <filterable>false</filterable>
         </org.biouno.unochoice.ChoiceParameter>
         <com.seitenbau.jenkins.plugins.dynamicparameter.StringParameterDefinition plugin="dynamicparameter@0.2.0">
-          <name>version</name>
+          <name>artifactVersion</name>
           <description></description>
-          <__uuid>a2f282a7-0c66-4a9a-9ef7-cd88bd565bd9</__uuid>
+          <__uuid>008df121-7157-4ace-9852-ce782d17d79f</__uuid>
           <__remote>false</__remote>
-          <__script>// last tag added to docker registry
-import groovy.json.*
-parser = new JsonSlurper()
-list = parser.parseText &quot;&quot;&quot;\
-	curl --insecure \
-         --url https://builder:5000/v2/webapp/tags/list \
-	&quot;&quot;&quot;.execute().text
-list.tags[-1]</__script>
+          <__script>artifacts = &quot;&quot;&quot; curl --insecure \
+                            --url https://builder:5000/v2/webapp/tags/list \
+                 &quot;&quot;&quot;.execute().text
+parser = new groovy.json.JsonSlurper()
+list = parser.parseText artifacts
+list.tags.last()</__script>
           <__localBaseDirectory serialization="custom">
             <hudson.FilePath>
               <default>
@@ -76,52 +74,90 @@ list.tags[-1]</__script>
     </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
   </properties>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@2.29">
-    <script>import groovy.json.*
-def service = [
-    git     :[scheme:&quot;https&quot;, host:&quot;github.com&quot;, path:&quot;JugosD/chef-repo.git&quot;],
-]
+    <script>def gitUrl = { credentials -&gt;
+    credentials = credentials ? &quot;$credentials@&quot; : &quot;&quot;
+    &quot;https://${credentials}github.com/JugosD/chef-repo.git&quot;
+}
 
-def serviceUrl = { it, credentials=null -&gt;
-    (it?.scheme ? &quot;${it.scheme}://&quot; : &quot;&quot;) + \
-    (credentials ? &quot;${credentials}@&quot; : &quot;&quot;) + \
-    (&quot;${it.host}&quot;) + \
-    (it?.port ? &quot;:${it.port}&quot; : &quot;&quot;) + \
-    (it?.path ? &quot;/${it.path}&quot; : &quot;&quot;)
+cookbook            = &quot;base&quot;
+attributesFileName  = &quot;cookbooks/$cookbook/attributes/default.rb&quot;
+metadataFileName    = &quot;cookbooks/$cookbook/metadata.rb&quot;
+environmentFileName = &quot;environments/${environment}.json&quot;
+
+@NonCPS
+def updateAttr(text, version) {
+    def expr = /(.*training.*deploy_version.*=\s*)&quot;([0-9.]+)&quot;/
+    text = text.readLines().collect {
+        (it =~ expr).each {match, header, version_text -&gt;
+            it = &quot;${header}\&quot;${version}\&quot;&quot;
+        }
+        it
+    }.join(&quot;\n&quot;)
 }
 
 @NonCPS
-def jsonParse(def json) {
-    new groovy.json.JsonSlurperClassic().parseText(json)
+def updateMeta(text) {
+    def expr = /(\s*version\s+)&quot;([0-9.]+)&quot;/
+    def version
+    text = text.readLines().collect {
+        (it =~ expr).each {match, header, version_text -&gt;
+            def (major, minor, build) = version_text.split(&quot;[.]&quot;)
+            version = &quot;${major}.${minor}.${(build as Integer) + 1}&quot;
+            it = &quot;${header}\&quot;${version}\&quot;&quot;
+        }
+        it
+    }.join(&quot;\n&quot;)
+    [text: text, version: version]
 }
 
-environmentFileName = &quot;environments/${environment}.json&quot;
+@NonCPS
+def updateEnv(text, version) {
+    def env = new groovy.json.JsonSlurper().parseText(text)
+    env.cookbook_versions[cookbook] = &quot;= $version&quot;
+    def json = groovy.json.JsonOutput.toJson(env)
+    groovy.json.JsonOutput.prettyPrint(json)
+}
 
 node(&quot;master&quot;) {
     stage(&quot;Preparation&quot;) {
-       git serviceUrl(service.git)
-       
-       parsed_env = jsonParse(readFile(environmentFileName))
-       parsed_env.default_attributes.training.deploy_version = version
-       
-       json_env = JsonOutput.toJson(parsed_env)
-       writeFile file: environmentFileName, text: JsonOutput.prettyPrint(json_env)
+        git gitUrl()
     }
-    stage(&quot;Deploy&quot;) {
-        sh &quot;knife environment from file ${environmentFileName}&quot;
+    stage(&quot;Update versions&quot;) {
+        // update artifact version
+        def attrText = updateAttr(readFile(attributesFileName), artifactVersion)
+        println attrText
+        writeFile file: attributesFileName, text: attrText
+        // increase version of cookbook
+        def metadata = updateMeta(readFile(metadataFileName))
+        println metadata.text
+        writeFile file: metadataFileName, text: metadata.text
+        // update cookbook version in environment file
+        def envText = updateEnv(readFile(environmentFileName), metadata.version)
+        println envText
+        writeFile file: environmentFileName, text: envText
+    }
+    stage(&quot;Update environment and $cookbook cookbook&quot;) {
+        sh &quot;knife environment from file $environmentFileName&quot;
+        sh &quot;&quot;&quot;knife cookbook \
+              upload $cookbook \
+              --cookbook-path cookbooks
+           &quot;&quot;&quot;
+    }
+    stage(&quot;Execute chef-client&quot;) {
         withCredentials(
             [usernamePassword(
                 credentialsId: &apos;knifeSSH&apos;,
                 usernameVariable: &apos;user&apos;,
                 passwordVariable: &apos;pass&apos;)]) {
             sh &quot;&quot;&quot;knife ssh \
-                  &apos;role:${role} AND chef_environment:${environment}&apos; \
+                  &apos;role:$role AND chef_environment:$environment&apos; \
                   chef-client \
-                  -x ${user} \
-                  -P ${pass} \
+                  -x $user \
+                  -P $pass \
                &quot;&quot;&quot;
         }
     }
-    stage(&quot;Publish ${version}&quot;) {
+    stage(&quot;Publish&quot;) {
         withCredentials(
             [usernameColonPassword(
                 credentialsId: &quot;GithubCredential&quot;,
@@ -130,8 +166,8 @@ node(&quot;master&quot;) {
                 &amp;&amp; git \
                     -c user.name=&apos;Jenkins&apos; \
                     -c user.email=&apos;without@email.com&apos; \
-                    commit -am &apos;Jenkins ${version}&apos; \
-                &amp;&amp; git push ${serviceUrl(service.git, credentials)} master\
+                    commit -am &apos;Jenkins $artifactVersion&apos; \
+                &amp;&amp; git push ${gitUrl(credentials)} master\
             &quot;&quot;&quot;
         }
     }
