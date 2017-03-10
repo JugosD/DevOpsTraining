@@ -1,10 +1,10 @@
-# Base cookbook `attributes/default.rb
+# Base cookbook `attributes/default.rb`
 ```ruby
 default["training"]["deploy_version"] = "0.0.74"
 default["training"]["workspace"] = "/home/vagrant"
 ```
 
-# Enviroment file
+# Enviroment `environments/dev.json`
 
 ```json
 {
